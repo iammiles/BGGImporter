@@ -4,10 +4,12 @@
     <AzureFunctionsVersion>v2</AzureFunctionsVersion>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="FSharp.Data" Version="3.0.0" />
     <PackageReference Include="Microsoft.NET.Sdk.Functions" Version="1.0.26" />
+    <PackageReference Include="Newtonsoft.Json" Version="11.0.2" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="HttpTriggerFsharp.fs" />
+    <Compile Include="Api.fs" />
   </ItemGroup>
   <ItemGroup>
     <None Update="host.json">
