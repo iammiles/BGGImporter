@@ -17,6 +17,7 @@ module API =
     open FSharp.Data
 
     type BoardGame = XmlProvider<"https://www.boardgamegeek.com/xmlapi2/thing?id=230802&type=boardgame">
+
     type UserProfile = XmlProvider<"""<?xml version="1.0" encoding="utf-8"?>
     <items>
         <item objecttype="thing" objectid="1" subtype="boardgame" collid="12345">
@@ -28,7 +29,9 @@ module API =
         <name sortindex="1">Test3</name></item>
     </items>
     """>
+
     type GameTuple = string * int
+
     type Game = {
         BGGId: int;
         MaxPlayers: int;
@@ -64,8 +67,6 @@ module API =
                 |> ignore)
 
     let client = new HttpClient()
-    
-
     let createProfileUri username = "https://boardgamegeek.com/xmlapi2/collection?username=" + username + "&own=1&subtype=boardgame"
     let gameUri (id:int) = String.Format("https://www.boardgamegeek.com/xmlapi2/thing?id={0}&type=boardgame,boardgameexpansion", id)
 
@@ -76,7 +77,6 @@ module API =
                 if resp.IsSuccessStatusCode then
                     let body = resp.Content.ReadAsByteArrayAsync().Result |> Text.Encoding.UTF8.GetString
                     let profile = body |> UserProfile.Parse
-                    //let profile = UserProfile.Load (profileUri username)
                     return profile.Items
                         |> Array.map(fun item -> (item.Name.Value, item.Objectid))
                 else return failwithf "Something went wrong! Could not reach boardgamegeek.com! Response code: %A %s" resp.StatusCode resp.ReasonPhrase
@@ -106,14 +106,11 @@ module API =
         Thread.Sleep 1000
         getUserGames id
         
-
     let tryLoadProfile id =
         match isReadiedProfile (createProfileUri id) with
         | 200 -> getUserGames id
         | 202 -> getUserGamesWithDelay id
         | _ -> null
-
-
 
     [<FunctionName("RetrieveGames")>]
     let retrieveGames([<HttpTrigger(AuthorizationLevel.Function, "get", Route = "Retrieve/{id}")>] req: HttpRequest, id: string, log: ILogger) =
