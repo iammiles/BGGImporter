@@ -1,9 +1,12 @@
 namespace MilesMcDaniel.BGGImporter
-open System.Net
 
 module API =
     open System
+    open System.Net
+    open System.Net.Http
+    open System.Text
     open System.IO
+    open System.Threading
     open System.Threading.Tasks
     open Microsoft.AspNetCore.Mvc
     open Microsoft.Azure.WebJobs
@@ -33,26 +36,88 @@ module API =
         Name: string;
     }
 
-    let profileUri username = "https://boardgamegeek.com/xmlapi2/collection?username=" + username + "&own=1&subtype=boardgame"
+    type Async with 
+        static member AwaitTaskCorrect(task : Task) : Async<unit> =
+            Async.FromContinuations(fun (sc,ec,cc) ->
+                task.ContinueWith(fun (task:Task) ->
+                    if task.IsFaulted then
+                        let e = task.Exception
+                        if e.InnerExceptions.Count = 1 then ec e.InnerExceptions.[0]
+                        else ec e
+                    elif task.IsCanceled then
+                        ec(TaskCanceledException())
+                    else
+                        sc ())
+                |> ignore)
+
+        static member AwaitTaskCorrect(task : Task<'T>) : Async<'T> =
+            Async.FromContinuations(fun (sc,ec,cc) ->
+                task.ContinueWith(fun (task:Task<'T>) ->
+                    if task.IsFaulted then
+                        let e = task.Exception
+                        if e.InnerExceptions.Count = 1 then ec e.InnerExceptions.[0]
+                        else ec e
+                    elif task.IsCanceled then
+                        ec(TaskCanceledException())
+                    else
+                        sc task.Result)
+                |> ignore)
+
+    let client = new HttpClient()
+    
+
+    let createProfileUri username = "https://boardgamegeek.com/xmlapi2/collection?username=" + username + "&own=1&subtype=boardgame"
     let gameUri (id:int) = String.Format("https://www.boardgamegeek.com/xmlapi2/thing?id={0}&type=boardgame,boardgameexpansion", id)
 
     let getUserGames username: GameTuple[] =
-        let profile = UserProfile.Load (profileUri username)
-        profile.Items
-            |> Array.map(fun item -> (item.Name.Value, item.Objectid))
+       async {
+            try
+                let! resp = client.GetAsync(createProfileUri username) |> Async.AwaitTaskCorrect
+                if resp.IsSuccessStatusCode then
+                    let body = resp.Content.ReadAsByteArrayAsync().Result |> Text.Encoding.UTF8.GetString
+                    let profile = body |> UserProfile.Parse
+                    //let profile = UserProfile.Load (profileUri username)
+                    return profile.Items
+                        |> Array.map(fun item -> (item.Name.Value, item.Objectid))
+                else return failwithf "Something went wrong! Could not reach boardgamegeek.com! Response code: %A %s" resp.StatusCode resp.ReasonPhrase
+            with
+            | :? HttpRequestException as e ->
+                return failwithf "Something went wrong! Could not reach boardgamegeek.com because '%s'" e.Message
+        } |> Async.RunSynchronously
+
+    // let getUserGames username: GameTuple[] =
+    //     let profile = UserProfile.Load (createProfileUri username)
+    //     profile.Items
+    //         |> Array.map(fun item -> (item.Name.Value, item.Objectid))
 
     let getGameData (gameTuple: GameTuple): Game =
         let name, id = gameTuple
         let game = BoardGame.Load (gameUri id)
         {BGGId = id; MaxPlayers = game.Item.Maxplayers.Value; MinPlayers = game.Item.Minplayers.Value; Name = name;}
 
-    let serialize (obj: Game[]) = JsonConvert.SerializeObject obj 
+    let isReadiedProfile profileUri =
+        let req = Http.Request (profileUri)
+        Thread.Sleep(1000)
+        req.StatusCode
+
+    let serialize (obj: Game[]) = JsonConvert.SerializeObject obj
+
+    let getUserGamesWithDelay id =
+        Thread.Sleep 1000
+        getUserGames id
+        
+
+    let tryLoadProfile id =
+        match isReadiedProfile (createProfileUri id) with
+        | 200 -> getUserGames id
+        | 202 -> getUserGamesWithDelay id
+        | _ -> null
 
 
 
     [<FunctionName("RetrieveGames")>]
     let retrieveGames([<HttpTrigger(AuthorizationLevel.Function, "get", Route = "Retrieve/{id}")>] req: HttpRequest, id: string, log: ILogger) =
-        let profileData = getUserGames id
+        let profileData = tryLoadProfile id
         let listOfGames = profileData |> Array.map getGameData;
         let gamesAsJson = serialize listOfGames
         gamesAsJson
