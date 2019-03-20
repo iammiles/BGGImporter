@@ -8,6 +8,7 @@ module API =
     open System.IO
     open System.Threading
     open System.Threading.Tasks
+    open System.Net.Http.Formatting
     open System.Xml.Linq
     open Microsoft.AspNetCore.Mvc
     open Microsoft.Azure.WebJobs
@@ -110,4 +111,7 @@ module API =
         let chunkedGameIds = gameIds |> Array.map(fun x -> x.ToString()) |>  Array.chunkBySize 15 |> Array.map(fun chunk -> chunk |> String.concat ",")
         let gameData = chunkedGameIds |> Array.map getGameData
         
-        req.CreateResponse(HttpStatusCode.OK, gameData, "application/json")
+        let jsonFormatter = JsonMediaTypeFormatter()
+        jsonFormatter.SerializerSettings.ContractResolver <- Serialization.CamelCasePropertyNamesContractResolver()
+
+        req.CreateResponse(HttpStatusCode.OK, gameData, jsonFormatter)
