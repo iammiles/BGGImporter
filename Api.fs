@@ -8,6 +8,7 @@ module API =
     open System.IO
     open System.Threading
     open System.Threading.Tasks
+    open System.Xml.Linq
     open Microsoft.AspNetCore.Mvc
     open Microsoft.Azure.WebJobs
     open Microsoft.Azure.WebJobs.Extensions.Http
@@ -16,7 +17,7 @@ module API =
     open Newtonsoft.Json
     open FSharp.Data
 
-    type BoardGame = XmlProvider<"https://www.boardgamegeek.com/xmlapi2/thing?id=230802&type=boardgame">
+    type BoardGame = XmlProvider<"https://www.boardgamegeek.com/xmlapi2/thing?id=4098,6356&type=boardgame,boardgameexpansion">
 
     type UserProfile = XmlProvider<"""<?xml version="1.0" encoding="utf-8"?>
     <items>
@@ -68,9 +69,9 @@ module API =
 
     let client = new HttpClient()
     let createProfileUri username = "https://boardgamegeek.com/xmlapi2/collection?username=" + username + "&own=1&subtype=boardgame"
-    let gameUri (id:int) = String.Format("https://www.boardgamegeek.com/xmlapi2/thing?id={0}&type=boardgame,boardgameexpansion", id)
+    let gameUri (id:string) = String.Format("https://www.boardgamegeek.com/xmlapi2/thing?id={0}&type=boardgame,boardgameexpansion", id)
 
-    let getUserGames username: GameTuple[] =
+    let getUserGames username: int[] =
        async {
             try
                 let! resp = client.GetAsync(createProfileUri username) |> Async.AwaitTaskCorrect
@@ -78,29 +79,57 @@ module API =
                     let body = resp.Content.ReadAsByteArrayAsync().Result |> Text.Encoding.UTF8.GetString
                     let profile = body |> UserProfile.Parse
                     return profile.Items
-                        |> Array.map(fun item -> (item.Name.Value, item.Objectid))
+                        |> Array.map(fun item -> item.Objectid)
                 else return failwithf "Something went wrong! Could not reach boardgamegeek.com! Response code: %A %s" resp.StatusCode resp.ReasonPhrase
             with
             | :? HttpRequestException as e ->
                 return failwithf "Something went wrong! Could not reach boardgamegeek.com because '%s'" e.Message
         } |> Async.RunSynchronously
 
+    let rec fromXml (xml:XElement) =
+
+      // Create a collection of key/value pairs for all attributes      
+      let attrs = 
+        [ for attr in xml.Attributes() ->
+            (attr.Name.LocalName, JsonValue.String attr.Value) ]
+
+      // Function that turns a collection of XElement values
+      // into an array of JsonValue (using fromXml recursively)
+      let createArray xelems =
+        [| for xelem in xelems -> fromXml xelem |]
+        |> JsonValue.Array
+
+      // Group child elements by their name and then turn all single-
+      // element groups into a record (recursively) and all multi-
+      // element groups into a JSON array using createArray
+      let children =
+        xml.Elements() 
+        |> Seq.groupBy (fun x -> x.Name.LocalName)
+        |> Seq.map (fun (key, childs) ->
+            match Seq.toList childs with
+            | [child] -> key, fromXml child
+            | children -> key + "s", createArray children )
+            
+      // Concatenate elements produced for child elements & attributes
+      Array.append (Array.ofList attrs) (Array.ofSeq children)
+            |> JsonValue.Record
+
     // let getUserGames username: GameTuple[] =
     //     let profile = UserProfile.Load (createProfileUri username)
     //     profile.Items
     //         |> Array.map(fun item -> (item.Name.Value, item.Objectid))
 
-    let getGameData (gameTuple: GameTuple): Game =
-        let name, id = gameTuple
-        let game = BoardGame.Load (gameUri id)
-        {BGGId = id; MaxPlayers = game.Item.Maxplayers.Value; MinPlayers = game.Item.Minplayers.Value; Name = name;}
+    let getGameData (id: string): JsonValue =
+       // let name, id = gameTuple
+        let games = BoardGame.Load (gameUri id)
+        Thread.Sleep 1000
+        fromXml games.XElement
+       // {BGGId = id; MaxPlayers = games.Item.Maxplayers.Value; MinPlayers = game.Item.Minplayers.Value; Name = name;}
 
     let isReadiedProfile profileUri =
         let req = Http.Request (profileUri)
-        Thread.Sleep(1000)
+        Thread.Sleep 100
         req.StatusCode
-
-    let serialize (obj: Game[]) = JsonConvert.SerializeObject obj
 
     let getUserGamesWithDelay id =
         Thread.Sleep 1000
@@ -113,8 +142,10 @@ module API =
         | _ -> null
 
     [<FunctionName("RetrieveGames")>]
-    let retrieveGames([<HttpTrigger(AuthorizationLevel.Function, "get", Route = "Retrieve/{id}")>] req: HttpRequest, id: string, log: ILogger) =
+    let retrieveGames([<HttpTrigger(AuthorizationLevel.Function, "get", Route = "Retrieve/{id}")>] req: HttpRequestMessage, id: string, log: ILogger) =
         let profileData = tryLoadProfile id
-        let listOfGames = profileData |> Array.map getGameData;
-        let gamesAsJson = serialize listOfGames
-        gamesAsJson
+        let blah = profileData |> Array.map(fun x -> x.ToString()) |>  Array.chunkBySize 15 |> Array.map(fun chunk -> chunk |> String.concat ",")
+        let bloop = blah |> Array.map getGameData
+        // let listOfGames = profileData |> Array.map getGameData;
+        
+        req.CreateResponse(HttpStatusCode.OK, bloop, "application/json")
